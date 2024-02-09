@@ -53,19 +53,21 @@ SwitecX25::SwitecX25(unsigned int steps, unsigned char pin1, unsigned char pin2,
     pinMode(pins[i], OUTPUT);
   }
   
-  dir = 0;
   vel = 0; 
-  stopped = true;
   currentStep = 0;
   targetStep = 0;
+  nextTime = 0;
 
   accelTable = defaultAccelTable;
   maxVel = defaultAccelTable[DEFAULT_ACCEL_TABLE_SIZE-1][0]; // last value in table.
 }
 
+bool SwitecX25::isStopped(void) { 
+  return currentStep == targetStep && vel == 0; 
+}
+
 void SwitecX25::writeIO()
 {
-
   byte mask = stateMap[currentState];  
   for (int i=0;i<pinCount;i++) {
     digitalWrite(pins[i], mask & 0x1);
@@ -101,7 +103,6 @@ void SwitecX25::zero()
   currentStep = 0;
   targetStep = 0;
   vel = 0;
-  dir = 0;
 }
 
 // This function determines the speed and accel
@@ -120,56 +121,37 @@ void SwitecX25::zero()
 // vel is decremented once each step until it reaches zero.
 
 void SwitecX25::advance()
-{
-  // detect stopped state
-  if (currentStep==targetStep && vel==0) {
-    stopped = true;
-    dir = 0;
-    time0 = micros();
+{   
+  // If we have nowhere to go then just return
+  if (this->isStopped()) { 
     return;
   }
   
-  // if stopped, determine direction
-  if (vel==0) {
-    dir = currentStep<targetStep ? 1 : -1;
-    // do not set to 0 or it could go negative in case 2 below
-    vel = 1; 
-  }
+  // determine distance, number of steps  to target.
+  // may be negative if we are headed away from target
+  int distance = (int) targetStep - (int) currentStep;
   
-  if (dir>0) {
+  if (distance - vel > 0 && vel < (int) maxVel) {
+	  vel++;
+  }
+  else if (distance - vel < 0 && vel > -((int) maxVel)) {
+	  vel--;
+  }
+
+  if (vel > 0) {
     stepUp();
-  } else {
+  } else if (vel < 0) {
     stepDown();
   }
-  
-  // determine delta, number of steps in current direction to target.
-  // may be negative if we are headed away from target
-  int delta = dir>0 ? targetStep-currentStep : currentStep-targetStep;
-  
-  if (delta>0) {
-    // case 1 : moving towards target (maybe under accel or decel)
-    if (delta < vel) {
-      // time to declerate
-      vel--;
-    } else if (vel < maxVel) {
-      // accelerating
-      vel++;
-    } else {
-      // at full speed - stay there
-    }
-  } else {
-    // case 2 : at or moving away from target (slow down!)
-    vel--;
-  }
-    
+   
   // vel now defines delay
   unsigned char i = 0;
   // this is why vel must not be greater than the last vel in the table.
-  while (accelTable[i][0]<vel) {
+  while (accelTable[i][0] < abs(vel)) {
     i++;
   }
-  microDelay = accelTable[i][1];
-  time0 = micros();
+
+  nextTime = micros() + accelTable[i][1];
 }
 
 void SwitecX25::setPosition(unsigned int pos)
@@ -177,33 +159,20 @@ void SwitecX25::setPosition(unsigned int pos)
   // pos is unsigned so don't need to check for <0
   if (pos >= steps) pos = steps-1;
   targetStep = pos;
-  if (stopped) {
-    // reset the timer to avoid possible time overflow giving spurious deltas
-    stopped = false;
-    time0 = micros();
-    microDelay = 0;
-  }
 }
 
 void SwitecX25::update()
 {
-  if (!stopped) {
-    unsigned long delta = micros() - time0;
-    if (delta >= microDelay) {
-      advance();
-    }
+  if (micros() >= nextTime) {
+    advance();
   }
 }
-
 
 //This updateMethod is blocking, it will give you smoother movements, but your application will wait for it to finish
 void SwitecX25::updateBlocking()
 {
-  while (!stopped) {
-    unsigned long delta = micros() - time0;
-    if (delta >= microDelay) {
-      advance();
-    }
+  while (!this->isStopped()) {
+    update();
   }
 }
 
